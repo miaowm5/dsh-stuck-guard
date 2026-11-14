@@ -38,7 +38,7 @@ Stops the agent instead of letting it keep trying workarounds: after N consecuti
 在插件管理器里填安装规格：
 
 ```
-github:<user>/dsh-stuck-guard#v0.1.0
+github:miaowm5/dsh-stuck-guard#v0.1.0
 ```
 
 也可以装本地目录（填绝对路径），或者发布到 npm 后直接用包名。装完如果插件列表里没出现，重启一次 DSH。

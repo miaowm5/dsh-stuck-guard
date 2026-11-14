@@ -4,6 +4,21 @@
   "private": true,
   "type": "module",
   "description": "Adds a stop-and-report checkpoint to the system prompt after consecutive tool failures.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "agent",
+    "guardrails",
+    "prompt"
+  ],
+  "homepage": "https://github.com/miaowm5/dsh-stuck-guard#readme",
+  "bugs": {
+    "url": "https://github.com/miaowm5/dsh-stuck-guard/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/miaowm5/dsh-stuck-guard.git"
+  },
   "exports": {
     ".": "./index.js",
     "./locale/*.json": "./locale/*.json",

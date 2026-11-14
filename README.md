@@ -1,38 +1,51 @@
 # dsh-stuck-guard
 
-卡住就停。把「连续换招但没结果时先停下来问人」变成随插件走的机制，而不是某台机器上的一个 Markdown 文件。
+卡住就停：连续工具调用失败达到阈值时，把一份「停机检查点」注入系统提示——附上失败调用与报错首行——让 agent 停下来汇报并问人，而不是继续换第四种办法。
 
-## 它做两件事
+Stops the agent instead of letting it keep trying workarounds: after N consecutive tool failures it injects a checkpoint into the system prompt, quoting the failing calls.
+
+## 它做什么
 
 两件事都注册在**系统提示**上（`ctx.systemPrompt.section(...)`），每次请求都带着，不依赖 step 边界或 inbox 投递：
 
-1. **升级协议**：`dsh-stuck-guard:protocol` section。内容是触发条件、什么算一次尝试、停下时说什么、硬红线。规则文本内嵌在 `index.js` 里，插件装到哪台机器，规则就跟到哪台机器。
-2. **卡住检查点**：监听 `tool/result`，连续失败到阈值（默认 3 次）时，再注册一个 `dsh-stuck-guard:checkpoint` section，把插件抓到的证据（工具名 + 报错首行）摆进提示。任意一次成功调用或新的用户消息到达时，调用 section 返回的 disposer 把它撤掉。
+1. **升级协议**（`dsh-stuck-guard:protocol`）：什么时候该停、什么算一次尝试、停下时该发什么、硬红线。规则文本内嵌在 `index.js` 里，插件装到哪台机器，规则就跟到哪台机器。
+2. **卡住检查点**（`dsh-stuck-guard:checkpoint`）：监听 `tool/result`，连续失败到阈值（默认 3 次）时注册，把证据摆进提示；任一次成功调用或新的用户消息到达时，调用 section 返回的 disposer 撤掉。
 
-判定只看结构化信号：`tool/result` 的 `error` 字段、`message.isError`、以及结果文本末尾的 `[exit code: N]`（pwsh 工具对非零退出码只打这个标记，不设 isError——这是最常见的失败形态）。
+失败判定只看结构化信号：`tool/result` 的 `error` 字段、`message.isError`、以及结果文本末尾的 `[exit code: N]`（shell 工具对非零退出码只打这个标记，不设 isError——这是最常见的失败形态）。
+
+## 检查点长什么样
+
+```
+[卡住检查点 · dsh-stuck-guard]
+最近连续 3 次工具调用失败，且看起来是同一类失败。按「升级协议」现在该停，不是再换一招。
+插件抓到的证据（最近几条，可直接写进汇报）：
+- pwsh | [stderr] Get-Item : 找不到路径"C:\x"，因为该路径不存在。…
+现在必须做：结束本回合，用不超过 15 行汇报——目标 / 已试方法表 / 已排除的假设 / 剩余可能 /
+你的判断 / A、B、C 三个选项，并直接问「你有方案吗？要按哪个走？」。
+```
 
 ## 为什么是提醒，不是硬阻塞
 
-「连续失败 3 次」是确定性信号，「这 3 次是不是在同一个坑里」不是。插件负责在正确的时间点把证据摆出来；是否属于同一个问题、该不该停，交给模型判断。硬阻塞会误伤合法的重试与探索式调试（TDD、逐步收敛的搜索、需要多轮试错的签名还原）。
+「连续失败 3 次」是确定性信号，「这 3 次是不是在同一个坑里」不是。插件负责在正确的时间点把证据摆出来；是否属于同一个问题、该不该停，交给模型结合证据判断。硬阻塞会误伤合法的重试与探索式调试（TDD、逐步收敛的搜索、需要多轮试错的签名还原）。
+
+## 要求
+
+- DSH 需要提供 `ctx.systemPrompt` 服务。插件通过 `export const inject = ['systemPrompt']` 声明依赖，缺少该服务的 profile 里不会激活。0.1.0 在桌面版验证通过。
+- 不需要网络、不需要凭据，不读写项目文件。
 
 ## 安装
 
-本机（`C:\Users\admin\.dsh\profiles\desktop`）已安装并验证生效。
+在插件管理器里填安装规格：
 
-另一台设备：
-
-```powershell
-# 1. 把整个 stuck-guard 目录拷过去（U 盘、网盘、git 都行）
-# 2. 在目标机器的插件目录里执行：
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-# 3. 重启 DSH
+```
+github:<user>/dsh-stuck-guard#v0.1.0
 ```
 
-`install.ps1` 会先备份 profile 的 `package.json`，再写依赖、写 bundles、建 `node_modules` 链接。多 profile 时用 `-ProfileDir` 指定。
+也可以装本地目录（填绝对路径），或者发布到 npm 后直接用包名。装完如果插件列表里没出现，重启一次 DSH。
 
 ## 配置
 
-在 profile 的 `cordis.patch.yml` 里按 id 覆盖，改完在插件设置里关掉再打开（live 重载，不必重启）：
+插件没有导出 `Config`，所以设置页不会给出表单；配置写在 profile 的 `cordis.patch.yml` 里，按 id 覆盖：
 
 ```yaml
 - id: dsh-stuck-guard
@@ -45,46 +58,38 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
     maxEvidence: 3        # 检查点里带几条证据
 ```
 
+改完在插件设置里关掉再打开即可生效（live 重载，不必重启）。
+
 ## 自测
 
 ```powershell
 node test/simulate.mjs
 ```
 
-覆盖：协议 section 注册、阈值触发检查点、证据内容、只触发一次、成功/用户消息撤回、忽略名单、退出码判定（`[exit code: 1]` 算失败、`[exit code: 0]` 不算）。不依赖 DSH 运行时。
+覆盖：协议 section 注册、阈值触发检查点、证据内容、只触发一次、成功/用户消息撤回、忽略名单、退出码判定（`[exit code: 1]` 算失败、`[exit code: 0]` 不算）。不依赖 DSH 运行时。`test/` 不在 `files` 里，不随包发布。
 
-## 诊断
+## 诊断与副作用
 
-每次加载、注册 section、触发阈值、报错都会写一行 JSON 到 `<DSH_HOME>/dsh-stuck-guard.log`（默认 `~/.dsh/dsh-stuck-guard.log`，每进程上限 200 行）：
+每次加载、注册 section、触发阈值、报错都会写一行 JSON 到 `<DSH_HOME>/dsh-stuck-guard.log`（默认 `~/.dsh/dsh-stuck-guard.log`）：
+
+- `module-loaded` / `apply`：文件真的被加载、配置真的生效
+- `section`：section 注册成功（`checkpoint: true/false` 表示加/撤）
+- `threshold`：失败计数到阈值
+- `error`：哪一步失败、为什么
+
+每个进程最多写 200 行；文件超过 512KB 时轮转一次为 `dsh-stuck-guard.log.1`。除这个日志外没有其它磁盘副作用。
 
 ```powershell
 Get-Content "$env:USERPROFILE\.dsh\dsh-stuck-guard.log" -Tail 20
 ```
 
-- `module-loaded` / `apply`：文件真的被加载、配置真的生效
-- `section`：section 注册成功（`checkpoint: true/false` 表示检查点的加/撤，`disposable` 表示能否撤销）
-- `threshold`：失败计数到阈值
-- `error`：哪一步失败了、为什么
-
 ## 卸载
 
-```powershell
-.\uninstall.ps1
-```
-
-删依赖、删 bundles 行、删链接，然后重启 DSH。`package.json.bak-*` 备份保留，可手动回滚。
-
-## 从文件迁移过来时的兜底
-
-`protocol-fallback.md` 是原先 `~/.dsh/AGENTS.md` 的内容。如果插件被禁用或加载失败，把它拷回去即可恢复「文件版」规则：
-
-```powershell
-Copy-Item .\protocol-fallback.md "$env:USERPROFILE\.dsh\AGENTS.md"
-```
+在插件管理器里移除该 bundle。手工装进 profile 的，删掉 `package.json` 里的依赖行、`dsh.profile.bundles` 里的名字和 `node_modules` 下的链接，然后重启。
 
 ## 已知限制
 
 - 只按「连续失败次数」计数；三次毫不相关的失败也会触发一次检查点（证据就在旁边，模型能看出不相关，成本是一段文字）。
 - 检查点是软约束：模型理论上仍可能忽略它继续试。要硬拦截，得在 `agent/pre-step` 里返回 `{ kind: 'reject' }`，代价是可能误伤合法调试。
-- `section` 同名只能注册一次，所以检查点用独立名字并靠 disposer 撤销；如果宿主版本不返回 disposer，检查点会一直留到插件重载（日志里 `disposable: false` 会提示）。
+- `section` 同名只能注册一次，所以检查点用独立名字并靠 disposer 撤销；如果宿主版本不返回 disposer，检查点会一直留到插件重载（日志里 `disposable: false`）。
 - 协议正文常驻系统提示，约 1.4KB；`injectProtocol: false` 可关。

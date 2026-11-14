@@ -3,13 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "卡住就停：连续工具失败到阈值时注入停机提醒，并自带升级协议文本",
+  "description": "Adds a stop-and-report checkpoint to the system prompt after consecutive tool failures.",
   "exports": {
-    ".": "./index.js"
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
   },
   "files": [
     "index.js",
     "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
     "README.md"
   ],
   "dsh": {

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Stuck guard",
+    "description": "Adds a stop-and-report checkpoint to the system prompt after consecutive tool failures, quoting the failing calls. Cleared by the next successful call or user message; it reminds and never blocks."
+  }
+}

@@ -11,20 +11,31 @@
  *
  * 所有钩子都在 try/catch 内，任何异常都只写日志，绝不能让插件的失败影响对话。
  */
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, renameSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 /**
- * 诊断日志：写到 `<DSH_HOME>/dsh-stuck-guard.log`，每次进程最多 200 行。
+ * 诊断日志：写到 `<DSH_HOME>/dsh-stuck-guard.log`，每进程最多 200 行，文件超过 512KB 时轮转。
  * 插件是软约束，出问题时唯一能拿到的证据就是它——所以宁可多写一行，也不要静默失败。
  */
 const DIAG_LOG = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'dsh-stuck-guard.log')
+const DIAG_MAX_BYTES = 512 * 1024
 let diagBudget = 200
+let diagRotated = false
+
+function rotateDiag() {
+  if (diagRotated) return
+  diagRotated = true
+  try {
+    if (statSync(DIAG_LOG).size > DIAG_MAX_BYTES) renameSync(DIAG_LOG, `${DIAG_LOG}.1`)
+  } catch {}
+}
 
 function diag(event, data = {}) {
   if (diagBudget <= 0) return
   diagBudget -= 1
+  rotateDiag()
   try {
     appendFileSync(DIAG_LOG, `${JSON.stringify({ t: new Date().toISOString(), event, pid: process.pid, ...data })}\n`, 'utf8')
   } catch {}
@@ -36,10 +47,10 @@ diag('module-loaded', { file: import.meta.url })
 /** 本插件依赖的服务：systemPrompt 只能通过 inject 取用。 */
 export const inject = ['systemPrompt']
 
-/** 注入正文的标题，用来在会话里认出这是插件塞进去的运行时消息。 */
+/** 协议正文的标题，出现在系统提示里，用来认出这段规则来自本插件。 */
 const PROTOCOL_HEADER = '[升级协议 · 由 dsh-stuck-guard 注入]'
 
-/** 停机提醒的标题。 */
+/** 停机检查点的标题。 */
 const REMINDER_HEADER = '[卡住检查点 · dsh-stuck-guard]'
 
 /**
@@ -88,13 +99,13 @@ const DEFAULTS = {
   enabled: true,
   /** 连续失败多少次触发一次停机提醒。 */
   failureThreshold: 3,
-  /** 是否在会话开头注入协议正文。为 false 时只做停机提醒。 */
+  /** 是否把协议正文放进系统提示。为 false 时只做停机提醒。 */
   injectProtocol: true,
-  /** 是否注入停机提醒。 */
+  /** 是否注册停机检查点。 */
   injectReminder: true,
   /** 不参与计数的工具名（例如纯查询类）。 */
   ignoreTools: [],
-  /** 提醒里最多带几条失败证据。 */
+  /** 检查点里最多带几条证据。 */
   maxEvidence: 3,
   /** 最多记住多少个会话的状态，超出后丢弃最早的。 */
   maxSessions: 200,
@@ -103,10 +114,9 @@ const DEFAULTS = {
 /** 一个会话的实时状态。 */
 function createState() {
   return {
-    /** 已经注入过协议正文。 */
     /** 连续失败的次数。 */
     failures: 0,
-    /** 触发阈值后置位，避免同一次卡住重复改写系统提示。 */
+    /** 触发阈值后置位，避免同一次卡住重复注册检查点。 */
     pendingReminder: false,
     /** 触发时的失败次数，用于措辞。 */
     triggeredAt: 0,
@@ -144,7 +154,7 @@ function resultText(message) {
  * 判断一次工具调用是不是失败。
  *
  * 三个信号缺一不可地覆盖不同工具：抛错（error）、工具自己标了 isError、以及 shell 的非零退出码
- * （pwsh 工具只在结果文本末尾追加 `[exit code: N]`，不设 isError——这是最常见的失败形态）。
+ * （shell 工具只在结果文本末尾追加 `[exit code: N]`，不设 isError——这是最常见的失败形态）。
  */
 function looksFailed(data) {
   if (data?.error !== undefined) return true
@@ -153,11 +163,11 @@ function looksFailed(data) {
 }
 
 /**
- * 生成停机提醒。
+ * 生成停机检查点。
  * @param state - 会话状态。
  * @param threshold - 触发阈值。
  * @param limit - 证据条数上限。
- * @returns 提醒正文。
+ * @returns 检查点正文。
  */
 function reminderText(state, threshold, limit) {
   const lines = [
@@ -259,16 +269,10 @@ export function apply(ctx, config = {}) {
     return state
   }
 
-  // 1) 失败计数：只认 tool/result 的结构化失败标记，不做文本猜测。
-  let probed = false
+  // 失败计数：只认 tool/result 的结构化失败标记，不做文本猜测。
   try {
     ctx.on('session/event', (session, event) => {
       try {
-        if (!probed) {
-          probed = true
-          const registry = ctx.get('agents')
-          diag('registry', { present: registry !== undefined, hasGet: typeof registry?.get === 'function' })
-        }
         const key = idOf(session)
         const state = stateFor(key)
         const type = event?.type
@@ -292,11 +296,9 @@ export function apply(ctx, config = {}) {
             if (state.failures >= options.failureThreshold && !state.pendingReminder) {
               state.triggeredAt = state.failures
               diag('threshold', { failures: state.failures })
-              if (options.injectReminder) {
-                state.pendingReminder = true
-                state.failures = 0
-                showCheckpoint(reminderText(state, options.failureThreshold, options.maxEvidence))
-              }
+              state.pendingReminder = true
+              state.failures = 0
+              showCheckpoint(reminderText(state, options.failureThreshold, options.maxEvidence))
             }
           } else {
             state.failures = 0

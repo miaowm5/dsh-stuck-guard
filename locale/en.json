@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Stuck guard",
-    "description": "Adds a stop-and-report checkpoint to the system prompt after consecutive tool failures, quoting the failing calls. Cleared by the next successful call or user message; it reminds and never blocks."
+    "description": "Adds a stop-and-report checkpoint to the system prompt after consecutive tool failures, quoting the failing calls. Cleared by the next successful call or user message; it reminds and never blocks. The threshold, evidence count, and ignored tools are edited on this plugin's page in Plugins."
   }
 }

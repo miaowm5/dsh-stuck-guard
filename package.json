@@ -31,6 +31,12 @@
     "icon.svg",
     "README.md"
   ],
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "^3.19.0"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

@@ -45,20 +45,28 @@ github:miaowm5/dsh-stuck-guard#v0.1.0
 
 ## 配置
 
-插件没有导出 `Config`，所以设置页不会给出表单；配置写在 profile 的 `cordis.patch.yml` 里，按 id 覆盖：
+插件导出了 `Config`，所以 **Settings 里会出现配置表单**——但表单只列 `.volatile()` 字段（改动原地生效，不重载插件）：
+
+| 字段 | 默认 | Settings 表单 | 说明 |
+|---|---|---|---|
+| `failureThreshold` | 3 | ✅ | 连续失败几次触发检查点 |
+| `injectReminder` | true | ✅ | 是否注册检查点 |
+| `ignoreTools` | `[]` | ✅ | 不参与计数的工具名 |
+| `maxEvidence` | 3 | ✅ | 检查点里带几条证据 |
+| `injectProtocol` | true | ❌ | 是否放协议正文；改动需重载插件 |
+| `maxSessions` | 200 | ❌ | 会话状态上限 |
+| `enabled` | true | ❌ | 关掉后不注册任何 section |
+
+非 volatile 字段和 `cordis.patch.yml` 覆盖仍然有效：
 
 ```yaml
 - id: dsh-stuck-guard
   name: dsh-stuck-guard
   config:
-    failureThreshold: 3   # 连续失败几次触发检查点
-    injectProtocol: true  # 是否把协议正文放进系统提示
-    injectReminder: true  # 是否注册检查点
-    ignoreTools: [read]   # 不参与计数的工具
-    maxEvidence: 3        # 检查点里带几条证据
+    injectProtocol: false
 ```
 
-改完在插件设置里关掉再打开即可生效（live 重载，不必重启）。
+改完在插件设置里关掉再打开即可生效（live 重载，不必重启）。表单只写 volatile 字段、不写普通字段，所以两者可以并存。
 
 ## 自测
 

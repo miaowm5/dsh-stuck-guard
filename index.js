@@ -11,6 +11,7 @@
  *
  * 所有钩子都在 try/catch 内，任何异常都只写日志，绝不能让插件的失败影响对话。
  */
+import z from '@deepseek-ai/schemastery'
 import { appendFileSync, renameSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -46,6 +47,29 @@ diag('module-loaded', { file: import.meta.url })
 
 /** 本插件依赖的服务：systemPrompt 只能通过 inject 取用。 */
 export const inject = ['systemPrompt']
+
+/**
+ * 行配置。
+ *
+ * 带 `.volatile()` 的字段改动后原地生效，会出现在 Settings 的配置表单里（表单只列 volatile 字段）；
+ * 其余字段改完要重启插件（cordis.patch.yml 或插件开关）。
+ */
+export const Config = z.object({
+  /** 关掉后插件不注册任何 section。 */
+  enabled: z.boolean().default(true),
+  /** 连续失败多少次触发一次检查点。volatile：改完立即生效。 */
+  failureThreshold: z.number().default(3).volatile(),
+  /** 是否把协议正文放进系统提示。改动需要重新加载插件。 */
+  injectProtocol: z.boolean().default(true),
+  /** 是否注册检查点。volatile：改完立即生效。 */
+  injectReminder: z.boolean().default(true),
+  /** 不参与计数的工具名。volatile：改完立即生效。 */
+  ignoreTools: z.array(z.string()).default([]).volatile(),
+  /** 检查点里最多带几条证据。volatile：改完立即生效。 */
+  maxEvidence: z.number().default(3).volatile(),
+  /** 最多记住多少个会话的状态，超出后丢弃最早的。 */
+  maxSessions: z.number().default(200),
+})
 
 /** 协议正文的标题，出现在系统提示里，用来认出这段规则来自本插件。 */
 const PROTOCOL_HEADER = '[升级协议 · 由 dsh-stuck-guard 注入]'
@@ -94,21 +118,16 @@ const PROTOCOL = [
   '反代或抓取第三方内容之前，先说出一条不依赖对方放行的 Plan B（官方 API、公开 CDN、用户手动提供、本地已有缓存）。没有 Plan B 就先补，再动手。',
 ].join('\n')
 
-/** 行配置默认值；cordis.patch.yml 里的 config 可以覆盖任意一项。 */
-const DEFAULTS = {
-  enabled: true,
-  /** 连续失败多少次触发一次停机提醒。 */
-  failureThreshold: 3,
-  /** 是否把协议正文放进系统提示。为 false 时只做停机提醒。 */
-  injectProtocol: true,
-  /** 是否注册停机检查点。 */
-  injectReminder: true,
-  /** 不参与计数的工具名（例如纯查询类）。 */
-  ignoreTools: [],
-  /** 检查点里最多带几条证据。 */
-  maxEvidence: 3,
-  /** 最多记住多少个会话的状态，超出后丢弃最早的。 */
-  maxSessions: 200,
+/**
+ * 读一个配置项：声明了 Config 时字段是带 `.get()` 的引用，单元测试里直接传普通对象。
+ * @param config - 行配置。
+ * @param key - 字段名。
+ * @returns 当前值，缺失时 undefined。
+ */
+function readConfig(config, key) {
+  const field = config?.[key]
+  if (field !== undefined && typeof field?.get === 'function') return field.get()
+  return field
 }
 
 /** 一个会话的实时状态。 */
@@ -189,13 +208,17 @@ function reminderText(state, threshold, limit) {
 /**
  * 注册插件。宿主通过 cordis 调用本函数，配置来自 cordis.patch.yml 的同名行。
  * @param ctx - 插件上下文。
- * @param config - 行配置。
+ * @param config - 行配置（声明了 Config 后是带引用的对象）。
  */
 export function apply(ctx, config = {}) {
-  const options = { ...DEFAULTS, ...(config ?? {}) }
-  if (options.enabled === false) return
-  options.ignoreTools = new Set(Array.isArray(options.ignoreTools) ? options.ignoreTools : [])
-  diag('apply', { threshold: options.failureThreshold, protocol: options.injectProtocol, reminder: options.injectReminder })
+  if (readConfig(config, 'enabled') === false) return
+  const threshold = () => readConfig(config, 'failureThreshold') ?? 3
+  const maxEvidence = () => readConfig(config, 'maxEvidence') ?? 3
+  const injectReminder = () => readConfig(config, 'injectReminder') !== false
+  const injectProtocol = readConfig(config, 'injectProtocol') !== false
+  const ignoreTools = () => new Set(readConfig(config, 'ignoreTools') ?? [])
+  const maxSessions = () => readConfig(config, 'maxSessions') ?? 200
+  diag('apply', { threshold: threshold(), protocol: injectProtocol, reminder: injectReminder() })
 
   // 协议正文进系统提示：不依赖 inbox 投递、不依赖 step 边界，每一次请求都带着它。
   // 检查点是**另一个** section：section 同名只能注册一次（再注册会抛错），
@@ -207,7 +230,7 @@ export function apply(ctx, config = {}) {
   } catch {}
   if (!Number.isFinite(order)) order = 500
 
-  if (options.injectProtocol) {
+  if (injectProtocol) {
     try {
       ctx.systemPrompt.section({ name: 'dsh-stuck-guard:protocol', order, text: PROTOCOL })
       diag('section', { registered: true, order })
@@ -228,7 +251,7 @@ export function apply(ctx, config = {}) {
   }
 
   const showCheckpoint = (text) => {
-    if (!options.injectReminder || text === '') return
+    if (!injectReminder() || text === '') return
     hideCheckpoint()
     try {
       const disposer = ctx.systemPrompt.section({ name: 'dsh-stuck-guard:checkpoint', order: order + 1, text })
@@ -261,7 +284,7 @@ export function apply(ctx, config = {}) {
     if (state === undefined) {
       state = createState()
       states.set(key, state)
-      if (states.size > options.maxSessions) {
+      if (states.size > maxSessions()) {
         const oldest = states.keys().next().value
         if (oldest !== undefined) states.delete(oldest)
       }
@@ -287,18 +310,18 @@ export function apply(ctx, config = {}) {
           const callId = data.message?.toolCallId
           const name = state.calls.get(callId) ?? '?'
           state.calls.delete(callId)
-          if (options.ignoreTools.has(name)) return
+          if (ignoreTools().has(name)) return
           const failed = looksFailed(data)
           if (failed) {
             state.failures += 1
             state.evidence.push({ tool: name, text: resultText(data.message) || (data.error?.name ?? 'failed') })
             if (state.evidence.length > 8) state.evidence.shift()
-            if (state.failures >= options.failureThreshold && !state.pendingReminder) {
+            if (state.failures >= threshold() && !state.pendingReminder) {
               state.triggeredAt = state.failures
               diag('threshold', { failures: state.failures })
               state.pendingReminder = true
               state.failures = 0
-              showCheckpoint(reminderText(state, options.failureThreshold, options.maxEvidence))
+              showCheckpoint(reminderText(state, threshold(), maxEvidence()))
             }
           } else {
             state.failures = 0
@@ -327,5 +350,5 @@ export function apply(ctx, config = {}) {
     log('warn', `cannot watch session events: ${String(error)}`)
   }
 
-  log('info', `loaded (threshold=${options.failureThreshold}, protocol=${options.injectProtocol})`)
+  log('info', `loaded (threshold=${threshold()}, protocol=${injectProtocol})`)
 }

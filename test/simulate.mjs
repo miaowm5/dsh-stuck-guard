@@ -133,4 +133,26 @@ function harness(config) {
   assert.equal(fine.sections.length, 0, 'exit code 0 不算失败')
 }
 
-console.log('PASS: 系统提示注入 / 检查点改写 / 撤回 / 证据 / 仅触发一次 / 成功清零 / 忽略名单 / 退出码判定')
+// H. 声明 Config 后宿主传的是带 .get() 的引用：读取必须走 get()
+{
+  const signal = (value) => ({ get: () => value })
+  const live = harness({
+    enabled: signal(true),
+    failureThreshold: signal(2),
+    injectProtocol: signal(true),
+    injectReminder: signal(true),
+    ignoreTools: signal(['read']),
+    maxEvidence: signal(1),
+  })
+  assert.equal(live.sections.length, 1, '引用式配置下协议 section 仍应注册')
+  live.toolResult('read', { failed: true, text: 'ENOENT' })
+  live.toolResult('read', { failed: true, text: 'ENOENT' })
+  assert.equal(live.sections.length, 1, 'ignoreTools 从引用读取')
+  live.toolResult('pwsh', { failed: true, text: 'a' })
+  live.toolResult('pwsh', { failed: true, text: 'b' })
+  assert.equal(live.sections.length, 2, '阈值从引用读取（2 次）')
+  assert.equal((live.latest().text.match(/^- /gm) ?? []).length, 1, 'maxEvidence 从引用读取（1 条）')
+}
+
+console.log('PASS: 系统提示注入 / 检查点改写 / 撤回 / 证据 / 仅触发一次 / 成功清零 / 忽略名单 / 退出码判定 / 引用式配置')
+
